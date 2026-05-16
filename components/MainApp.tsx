@@ -166,12 +166,12 @@ export default function MainApp() {
 
   // ── Downloads ─────────────────────────────────────────────
   const handleDownload = useCallback((videoId: string, fmt: 'mp4' | 'mp3') => {
+    const title = selectedVideo?.title || videoId;
     const a = document.createElement('a');
-    a.href = `/api/download?videoId=${videoId}&format=${fmt}`;
-    a.download = `${videoId}.${fmt}`;
+    a.href = `/api/download?videoId=${videoId}&format=${fmt}&title=${encodeURIComponent(title)}`;
     a.click();
     showToast(`${fmt.toUpperCase()} download started`);
-  }, [showToast]);
+  }, [showToast, selectedVideo]);
 
   // ── Mode switch ───────────────────────────────────────────
   const switchMode = (m: AppMode) => {

@@ -1,82 +1,83 @@
-export const runtime = 'nodejs';
+export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 import { type NextRequest, NextResponse } from 'next/server';
-
-function toWebStream(nodeStream: NodeJS.ReadableStream): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      nodeStream.on('data', (chunk: Buffer) =>
-        controller.enqueue(new Uint8Array(chunk))
-      );
-      nodeStream.on('end', () => controller.close());
-      nodeStream.on('error', (err) => controller.error(err));
-    },
-    cancel() {
-      (nodeStream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
-    },
-  });
-}
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const videoId = searchParams.get('videoId');
   const format = (searchParams.get('format') || 'mp4') as 'mp4' | 'mp3';
+  const rawTitle = searchParams.get('title') || videoId || 'download';
 
   if (!videoId) {
     return NextResponse.json({ error: 'Missing videoId' }, { status: 400 });
   }
 
-  const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const safeTitle = rawTitle
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 200) || videoId;
 
   try {
-    const ytdl = (await import('@distube/ytdl-core')).default;
-
-    if (format === 'mp3') {
-      const ffmpeg = (await import('fluent-ffmpeg')).default;
-      const ffmpegPath = (await import('ffmpeg-static')).default;
-      if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
-
-      const { PassThrough } = await import('stream');
-      const audioStream = ytdl(url, {
-        quality: 'highestaudio',
-        filter: 'audioonly',
-      });
-      const pass = new PassThrough();
-
-      ffmpeg(audioStream)
-        .audioCodec('libmp3lame')
-        .audioBitrate(320)
-        .format('mp3')
-        .on('error', (err: Error) => pass.destroy(err))
-        .pipe(pass);
-
-      return new Response(toWebStream(pass), {
-        headers: {
-          'Content-Type': 'audio/mpeg',
-          'Content-Disposition': `attachment; filename="${videoId}.mp3"`,
-          'Transfer-Encoding': 'chunked',
-        },
-      });
-    }
-
-    // MP4 — combined audio+video stream
-    const stream = ytdl(url, {
-      quality: 'highest',
-      filter: 'audioandvideo',
+    const cobaltRes = await fetch('https://api.cobalt.tools/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+        downloadMode: format === 'mp3' ? 'audio' : 'auto',
+        audioFormat: format === 'mp3' ? 'mp3' : undefined,
+        videoQuality: '1080',
+        filenameStyle: 'basic',
+      }),
     });
 
-    return new Response(toWebStream(stream), {
+    if (!cobaltRes.ok) {
+      return NextResponse.json(
+        { error: `cobalt returned ${cobaltRes.status}` },
+        { status: 502 }
+      );
+    }
+
+    const cobaltData = await cobaltRes.json();
+
+    // Handle picker (multiple formats) — just take first
+    let downloadUrl: string | undefined = cobaltData.url;
+    if (cobaltData.status === 'picker' && cobaltData.picker?.length) {
+      downloadUrl = cobaltData.picker[0].url;
+    }
+
+    if (cobaltData.status === 'error' || !downloadUrl) {
+      return NextResponse.json(
+        { error: cobaltData.error?.code || 'cobalt returned no URL' },
+        { status: 500 }
+      );
+    }
+
+    // Proxy the stream so we control the filename
+    const dlRes = await fetch(downloadUrl);
+    if (!dlRes.ok || !dlRes.body) {
+      return NextResponse.json({ error: 'Download source unavailable' }, { status: 502 });
+    }
+
+    const ext = format === 'mp3' ? 'mp3' : 'mp4';
+    const filename = `${safeTitle}.${ext}`;
+    const contentType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+
+    return new Response(dlRes.body, {
       headers: {
-        'Content-Type': 'video/mp4',
-        'Content-Disposition': `attachment; filename="${videoId}.mp4"`,
-        'Transfer-Encoding': 'chunked',
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        'Cache-Control': 'no-store',
       },
     });
   } catch (err) {
     console.error('Download error:', err);
     return NextResponse.json(
-      { error: 'Download failed', message: String(err) },
+      { error: 'Download failed', detail: String(err) },
       { status: 500 }
     );
   }
