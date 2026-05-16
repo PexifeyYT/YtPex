@@ -27,14 +27,8 @@ export default function ShortsViewer({ shorts, loading, query, onLoadMore, onSea
     const onKey = (e: KeyboardEvent) => {
       const feed = feedRef.current;
       if (!feed) return;
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        feed.scrollBy({ top: window.innerHeight, behavior: 'smooth' });
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        feed.scrollBy({ top: -window.innerHeight, behavior: 'smooth' });
-      }
+      if (e.key === 'ArrowDown') { e.preventDefault(); feed.scrollBy({ top: window.innerHeight, behavior: 'smooth' }); }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); feed.scrollBy({ top: -window.innerHeight, behavior: 'smooth' }); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -97,7 +91,7 @@ export default function ShortsViewer({ shorts, loading, query, onLoadMore, onSea
         )}
 
         {shorts.map((short, idx) => (
-          <ShortCard key={`${short.id}-${idx}`} short={short}/>
+          <ShortCard key={`${short.id}-${idx}`} short={short} />
         ))}
 
         {loading && (
@@ -115,16 +109,73 @@ export default function ShortsViewer({ shorts, loading, query, onLoadMore, onSea
 }
 
 function ShortCard({ short }: { short: VideoResult }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [isActive, setIsActive] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  // Detect card entering/leaving viewport
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const visible = entry.intersectionRatio >= 0.6;
+        setIsActive(visible);
+        if (visible) setLoaded(true); // load once, keep forever
+      },
+      { threshold: [0, 0.6, 1], root: null }
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Play / pause via YouTube postMessage API
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe || !loaded) return;
+
+    const cmd = isActive ? 'playVideo' : 'pauseVideo';
+    // Small delay — iframe JS API may not be ready immediately after mount
+    const t = setTimeout(() => {
+      iframe.contentWindow?.postMessage(
+        JSON.stringify({ event: 'command', func: cmd, args: [] }),
+        '*'
+      );
+    }, 150);
+
+    return () => clearTimeout(t);
+  }, [isActive, loaded]);
+
+  const iframeSrc = `https://www.youtube.com/embed/${short.id}`
+    + `?enablejsapi=1&autoplay=1&mute=1&loop=1&playlist=${short.id}`
+    + `&playsinline=1&rel=0&modestbranding=1`;
+
   return (
-    <div className="short-card">
-      <iframe
-        className="short-iframe"
-        src={`https://www.youtube.com/embed/${short.id}?loop=1&playlist=${short.id}&playsinline=1&rel=0&modestbranding=1`}
-        allow="autoplay; encrypted-media; gyroscope; picture-in-picture"
-        allowFullScreen
-        loading="lazy"
-        title={short.title}
-      />
+    <div className="short-card" ref={cardRef}>
+      {/* Thumbnail shown until card first enters view */}
+      {!loaded && (
+        <img
+          src={short.thumbnail}
+          alt={short.title}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      )}
+
+      {/* Iframe loaded lazily, controlled via postMessage */}
+      {loaded && (
+        <iframe
+          ref={iframeRef}
+          className="short-iframe"
+          src={iframeSrc}
+          allow="autoplay; encrypted-media; gyroscope; picture-in-picture"
+          allowFullScreen
+          title={short.title}
+        />
+      )}
+
       <div className="short-overlay">
         <div className="short-overlay-glass">
           <div className="short-info">
