@@ -27,7 +27,8 @@ interface YTPlayerInstance {
   destroy(): void;
   pauseVideo(): void;
   playVideo(): void;
-  getPlayerState(): number; // 1=playing 2=paused
+  getPlayerState(): number;
+  getIframe(): HTMLIFrameElement;
 }
 
 let apiLoaded = false;
@@ -105,8 +106,9 @@ export default function Player({ videoId, title, channelTitle, publishedAt, onCl
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayerInstance | null>(null);
   const mountedId = useRef('');
-  const [playerState, setPlayerState] = useState<number>(-1); // -1 unstarted
+  const [playerState, setPlayerState] = useState<number>(-1);
   const [icon, setIcon] = useState<IconState>(null);
+  const [isHovered, setIsHovered] = useState(false);
   const iconTimer = useRef<ReturnType<typeof setTimeout>>();
 
   // ── YT init ─────────────────────────────────────────────
@@ -129,7 +131,15 @@ export default function Player({ videoId, title, channelTitle, publishedAt, onCl
         videoId,
         width: '100%',
         height: '100%',
-        playerVars: { autoplay: 1, modestbranding: 1, rel: 0, origin: window.location.origin },
+        playerVars: {
+          autoplay: 1,
+          controls: 0,
+          modestbranding: 1,
+          rel: 0,
+          iv_load_policy: 3,
+          disablekb: 0,
+          origin: window.location.origin,
+        },
         events: {
           onReady: e => e.target.loadVideoById(videoId),
           onStateChange: e => setPlayerState(e.data),
@@ -155,26 +165,37 @@ export default function Player({ videoId, title, channelTitle, publishedAt, onCl
 
     const state = p.getPlayerState();
     if (state === 1) {
-      // currently playing → pause
       p.pauseVideo();
-      setIcon('pause'); // stays until unpaused
+      setIcon('pause');
     } else {
-      // paused / unstarted → play
       p.playVideo();
-      setIcon('play'); // fades after 900ms
+      setIcon('play');
       iconTimer.current = setTimeout(() => setIcon(null), 900);
     }
   }, []);
 
-  // When YT state changes to playing externally, clear pause icon
+  // Clear pause icon when YT resumes externally
   useEffect(() => {
     if (playerState === 1) {
-      // playing — if pause icon was showing, remove after brief moment
       iconTimer.current = setTimeout(() => setIcon(null), 900);
     }
   }, [playerState]);
 
-  const isPaused = playerState === 2;
+  // ── Fullscreen ───────────────────────────────────────────
+  const handleFullscreen = useCallback(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    try {
+      const iframe = p.getIframe();
+      if (iframe.requestFullscreen) iframe.requestFullscreen();
+      else if ((iframe as HTMLIFrameElement & { webkitRequestFullscreen?: () => void }).webkitRequestFullscreen) {
+        (iframe as HTMLIFrameElement & { webkitRequestFullscreen?: () => void }).webkitRequestFullscreen!();
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  const isPaused = playerState === 2 || playerState === -1 || playerState === 5;
+  const showControls = isHovered || isPaused;
 
   return (
     <div className="player-stage">
@@ -185,18 +206,62 @@ export default function Player({ videoId, title, channelTitle, publishedAt, onCl
           {/* YT iframe mount */}
           <div ref={containerRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}/>
 
-          {/* Click zone — covers video center, leaves bottom for YT controls */}
-          <div className="player-click-zone" onClick={handleScreenClick} title="Click to play/pause"/>
+          {/* Full-area click zone + hover controls */}
+          <div
+            className="player-click-zone"
+            onClick={handleScreenClick}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+          >
+            {/* Hover/pause controls overlay */}
+            <div className={`player-controls-overlay${showControls ? ' visible' : ''}`}>
+              {/* Back to results */}
+              <button
+                className="player-ctrl-btn"
+                onClick={e => { e.stopPropagation(); onClose(); }}
+                title="Back to results"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 12H5M12 5l-7 7 7 7"/>
+                </svg>
+                Back
+              </button>
 
-          {/* Fading play/pause indicator */}
-          {icon && (
-            <div className={`play-pause-indicator ${icon === 'pause' && isPaused ? 'indicator-stay' : 'indicator-fade'}`}>
-              {icon === 'pause'
-                ? <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-                : <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
-              }
+              {/* Play / Pause */}
+              <button
+                className="player-ctrl-btn play-ctrl"
+                onClick={e => { e.stopPropagation(); handleScreenClick(); }}
+                title={isPaused ? 'Play' : 'Pause'}
+              >
+                {isPaused
+                  ? <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                  : <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                }
+              </button>
+
+              {/* Fullscreen */}
+              <button
+                className="player-ctrl-btn"
+                onClick={e => { e.stopPropagation(); handleFullscreen(); }}
+                title="Fullscreen"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                </svg>
+                Fullscreen
+              </button>
             </div>
-          )}
+
+            {/* Click-feedback indicator (fades on play, stays on pause) */}
+            {icon && (
+              <div className={`play-pause-indicator ${icon === 'pause' && isPaused ? 'indicator-stay' : 'indicator-fade'}`}>
+                {icon === 'pause'
+                  ? <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+                  : <svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                }
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="player-meta">
